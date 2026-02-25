@@ -16,7 +16,7 @@ build/
 dist/
 *.manifest
 
-# ── ffmpeg binaries (~400 MB — users download separately or are bundled in .exe)
+# ── ffmpeg binaries (~400 MB — bundled into .exe via spec, not needed in repo)
 ffmpeg/
 
 # ── Runtime-generated app data ────────────────────────────────────────────────
