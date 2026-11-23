@@ -177,6 +177,12 @@ class SettingsDialog(tk.Toplevel):
         for key, var in self._vars.items():
             data[key] = var.get()
         settings.update(data)
+        try:
+            from core.downloader import downloader
+            if "concurrent_downloads" in data:
+                downloader.set_concurrency(data["concurrent_downloads"])
+        except Exception:
+            pass
         messagebox.showinfo("Settings", "Settings saved successfully!", parent=self)
         self.destroy()
 

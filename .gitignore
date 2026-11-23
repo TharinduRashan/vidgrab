@@ -23,7 +23,11 @@ ffmpeg/
 settings.json
 history.json
 
-# ── IDE / OS junk ─────────────────────────────────────────────────────────────
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
 .vscode/
 .idea/
 *.swp

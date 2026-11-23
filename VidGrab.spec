@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""
+r"""
 PyInstaller spec — VidGrab  (SINGLE FILE build)
 ================================================
 Produces:  dist\VidGrab.exe   ← one file, share this alone
@@ -33,15 +33,17 @@ hidden = (
 # ── Data files ───────────────────────────────────────────────────────────────
 datas = collect_data_files('yt_dlp')
 
-# ── Bundle ffmpeg (extracted to ./ffmpeg/) ──────────────────────────────────
+# ── Bundle ffmpeg (extracted to ./ffmpeg/ if present) ────────────────────────
 import os
-datas += [
-    ('./ffmpeg/ffmpeg.exe',   'ffmpeg'),
-    ('./ffmpeg/ffprobe.exe',  'ffmpeg'),
-]
+for bin_name in ('ffmpeg.exe', 'ffprobe.exe'):
+    bin_path = os.path.join('.', 'ffmpeg', bin_name)
+    if os.path.isfile(bin_path):
+        datas.append((bin_path, 'ffmpeg'))
 
 # ── Optional: app icon ───────────────────────────────────────────────────────
-# datas += [('./assets/icon.ico', 'assets')]
+icon_file = 'assets/icon.ico' if os.path.isfile('assets/icon.ico') else None
+if icon_file:
+    datas.append(('assets/icon.ico', 'assets'))
 
 a = Analysis(
     ['main.py'],
@@ -66,6 +68,8 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+version_file = 'version_info.txt' if os.path.isfile('version_info.txt') else None
+
 # ── SINGLE FILE EXE ─────────────────────────────────────────────────────────
 exe = EXE(
     pyz,
@@ -86,5 +90,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon='assets/icon.ico',  # un-comment if you have an .ico
+    icon=icon_file,
+    version=version_file,
 )

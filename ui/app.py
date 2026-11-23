@@ -74,6 +74,10 @@ class YoutubeDownloaderApp:
         self._audio_only       = tk.BooleanVar(value=False)
         self._url_var          = tk.StringVar()
         self._status_var       = tk.StringVar(value="Ready")
+        self._is_fetching:     bool                   = False
+        self._active_fetch_id: int                    = 0
+
+        self._url_var.trace_add("write", self._on_url_modified)
 
         self._build_ui()
         self._bind_drag_drop()
@@ -81,13 +85,32 @@ class YoutubeDownloaderApp:
     # ── Icon ───────────────────────────────────────────────────────────────
 
     def _set_icon(self):
-        """Attempt to set window icon (optional)."""
-        icon_path = os.path.join(os.path.dirname(__file__), "..", "assets", "icon.ico")
-        if os.path.isfile(icon_path):
+        """Set window and taskbar icon for the application and all child dialogs."""
+        import sys
+        icon_path = None
+        if getattr(sys, "frozen", False):
+            candidate = os.path.join(sys._MEIPASS, "assets", "icon.ico")
+            if os.path.isfile(candidate):
+                icon_path = candidate
+
+        if not icon_path:
+            candidate = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "icon.ico"))
+            if os.path.isfile(candidate):
+                icon_path = candidate
+
+        if icon_path:
             try:
                 self._root.iconbitmap(icon_path)
             except Exception:
                 pass
+            if _PIL_AVAILABLE:
+                try:
+                    img = Image.open(icon_path)
+                    photo = ImageTk.PhotoImage(img)
+                    self._app_icon = photo  # keep reference
+                    self._root.iconphoto(True, photo)
+                except Exception:
+                    pass
 
     # ────────────────────────────── UI LAYOUT ─────────────────────────────
 
@@ -191,17 +214,17 @@ class YoutubeDownloaderApp:
         self._build_url_row(parent)
 
         # Info + formats (tabbed)
-        notebook = ttk.Notebook(parent, style="Dark.TNotebook")
-        notebook.pack(fill="both", expand=True, padx=12, pady=8)
+        self._notebook = ttk.Notebook(parent, style="Dark.TNotebook")
+        self._notebook.pack(fill="both", expand=True, padx=12, pady=8)
 
         # Tab 1: Video info + format selector
-        self._info_tab = ttk.Frame(notebook, style="Dark.TFrame")
-        notebook.add(self._info_tab, text="  Video Info  ")
+        self._info_tab = ttk.Frame(self._notebook, style="Dark.TFrame")
+        self._notebook.add(self._info_tab, text="  Video Info  ")
         self._build_info_tab(self._info_tab)
 
         # Tab 2: Playlist viewer
-        self._playlist_tab = ttk.Frame(notebook, style="Dark.TFrame")
-        notebook.add(self._playlist_tab, text="  Playlist  ")
+        self._playlist_tab = ttk.Frame(self._notebook, style="Dark.TFrame")
+        self._notebook.add(self._playlist_tab, text="  Playlist  ")
         self._build_playlist_tab(self._playlist_tab)
 
     # ── URL row ────────────────────────────────────────────────────────────
@@ -462,10 +485,17 @@ class YoutubeDownloaderApp:
 
     # ────────────────────────── ACTIONS ────────────────────────────────────
 
+    def _on_url_modified(self, *args):
+        """Re-enable fetch button if user changes or pastes a new URL."""
+        if not self._is_fetching and hasattr(self, "_fetch_btn"):
+            self._fetch_btn.configure(state="normal", text="Fetch", bg=C["accent"])
+
     def _paste_url(self):
         try:
             text = self._root.clipboard_get()
             self._url_var.set(text.strip())
+            if not self._is_fetching and hasattr(self, "_fetch_btn"):
+                self._fetch_btn.configure(state="normal", text="Fetch", bg=C["accent"])
         except tk.TclError:
             pass
 
@@ -481,6 +511,11 @@ class YoutubeDownloaderApp:
     # ── Fetch video info ───────────────────────────────────────────────────
 
     def _fetch_info(self):
+        if self._is_fetching:
+            # Clicking while fetching allows the user to immediately cancel/abort
+            self._cancel_fetch()
+            return
+
         url = self._url_var.get().strip()
         if not url:
             self._show_error("Please enter a URL.")
@@ -489,25 +524,57 @@ class YoutubeDownloaderApp:
             self._show_error("Unsupported URL.\n\nSupported platforms: YouTube, Facebook, Instagram, TikTok, Vimeo, Twitter/X, Reddit, Twitch, and more.")
             return
 
+        self._active_fetch_id += 1
+        fetch_id = self._active_fetch_id
+        self._is_fetching = True
+
         self._status_var.set("Fetching video info…")
-        self._fetch_btn.configure(state="disabled", text="⏳ Fetching…")
+        self._fetch_btn.configure(state="normal", text="✕ Cancel", bg="#DC2626")
         self._dl_btn.configure(state="disabled")
         self._clear_info()
 
-        threading.Thread(target=self._fetch_worker, args=(url,), daemon=True).start()
+        threading.Thread(target=self._fetch_worker, args=(url, fetch_id), daemon=True).start()
 
-    def _fetch_worker(self, url: str):
+    def _cancel_fetch(self):
+        """Immediately abort active fetch state so the user is never stuck."""
+        self._active_fetch_id += 1
+        self._is_fetching = False
+        self._fetch_btn.configure(state="normal", text="Fetch", bg=C["accent"])
+        self._status_var.set("Fetch cancelled.")
+        self._thumb_canvas.delete("all")
+        self._thumb_canvas.create_text(
+            D["thumbnail_width"] // 2, D["thumbnail_height"] // 2,
+            text="No Preview", fill=C["text_muted"], font=F["small"],
+        )
+
+    def _fetch_worker(self, url: str, fetch_id: int):
         try:
             if is_playlist_url(url):
                 info = downloader.fetch_info(url)
-                self._root.after(0, self._on_playlist_fetched, info)
+                self._root.after(0, self._on_playlist_fetched, info, fetch_id)
             else:
                 info = downloader.fetch_formats(url)
-                self._root.after(0, self._on_info_fetched, info)
+                self._root.after(0, self._on_info_fetched, info, fetch_id)
         except Exception as exc:
-            self._root.after(0, self._on_fetch_error, str(exc))
+            self._root.after(0, self._on_fetch_error, str(exc), fetch_id)
 
-    def _on_info_fetched(self, info: dict):
+    def _on_info_fetched(self, info: dict, fetch_id: int):
+        if fetch_id != self._active_fetch_id:
+            return  # Discard obsolete/cancelled fetch
+
+        self._is_fetching = False
+        self._fetch_btn.configure(state="normal", text="Fetch", bg=C["accent"])
+
+        if not info or not isinstance(info, dict):
+            self._status_var.set("Failed to fetch info.")
+            self._thumb_canvas.delete("all")
+            self._thumb_canvas.create_text(
+                D["thumbnail_width"] // 2, D["thumbnail_height"] // 2,
+                text="No Preview", fill=C["text_muted"], font=F["small"],
+            )
+            self._show_error("Could not retrieve video information. The link may be private, unavailable, or restricted.")
+            return
+
         self._current_info    = info
         self._current_formats = parse_formats(info)
 
@@ -518,17 +585,35 @@ class YoutubeDownloaderApp:
         self._views_var.set(f"{views:,}" if views else "–")
 
         self._populate_formats(self._current_formats)
-        self._dl_btn.configure(state="normal")
+        self._notebook.select(self._info_tab)
+        if self._current_formats:
+            self._dl_btn.configure(state="normal")
         self._status_var.set(f"Loaded: {info.get('title', '')[:60]}")
-        self._fetch_btn.configure(state="normal", text="🔍  Fetch Info")
 
         # Thumbnail
         thumb_url = info.get("thumbnail")
         if thumb_url:
             threading.Thread(target=self._load_thumbnail,
-                             args=(thumb_url,), daemon=True).start()
+                             args=(thumb_url, fetch_id), daemon=True).start()
+        else:
+            self._thumb_canvas.delete("all")
+            self._thumb_canvas.create_text(
+                D["thumbnail_width"] // 2, D["thumbnail_height"] // 2,
+                text="No Preview", fill=C["text_muted"], font=F["small"],
+            )
 
-    def _on_playlist_fetched(self, info: dict):
+    def _on_playlist_fetched(self, info: dict, fetch_id: int):
+        if fetch_id != self._active_fetch_id:
+            return
+
+        self._is_fetching = False
+        self._fetch_btn.configure(state="normal", text="Fetch", bg=C["accent"])
+
+        if not info or not isinstance(info, dict):
+            self._status_var.set("Failed to fetch playlist.")
+            self._show_error("Could not retrieve playlist. It may be private or unavailable.")
+            return
+
         entries = info.get("entries", []) or []
         self._playlist_items = [e for e in entries if e]
 
@@ -547,12 +632,21 @@ class YoutubeDownloaderApp:
                 entry.get("url") or entry.get("webpage_url", ""),
             ))
 
+        self._notebook.select(self._playlist_tab)
         self._status_var.set(f"Playlist loaded: {len(self._playlist_items)} videos")
-        self._fetch_btn.configure(state="normal", text="🔍  Fetch Info")
 
-    def _on_fetch_error(self, error: str):
-        self._fetch_btn.configure(state="normal", text="🔍  Fetch Info")
+    def _on_fetch_error(self, error: str, fetch_id: int):
+        if fetch_id != self._active_fetch_id:
+            return
+
+        self._is_fetching = False
+        self._fetch_btn.configure(state="normal", text="Fetch", bg=C["accent"])
         self._status_var.set("Failed to fetch info.")
+        self._thumb_canvas.delete("all")
+        self._thumb_canvas.create_text(
+            D["thumbnail_width"] // 2, D["thumbnail_height"] // 2,
+            text="No Preview", fill=C["text_muted"], font=F["small"],
+        )
         self._show_error(f"Could not fetch video info:\n\n{error[:200]}")
 
     def _clear_info(self):
@@ -569,12 +663,16 @@ class YoutubeDownloaderApp:
 
     # ── Thumbnail ──────────────────────────────────────────────────────────
 
-    def _load_thumbnail(self, url: str):
+    def _load_thumbnail(self, url: str, fetch_id: int):
         if not _PIL_AVAILABLE:
             return
         try:
             import requests
-            resp = requests.get(url, timeout=10)
+            proxies = None
+            p = settings.get("proxy", "").strip()
+            if p:
+                proxies = {"http": p, "https": p}
+            resp = requests.get(url, timeout=10, proxies=proxies)
             resp.raise_for_status()
             img = Image.open(io.BytesIO(resp.content))
             img = img.resize(
@@ -582,11 +680,13 @@ class YoutubeDownloaderApp:
                 Image.LANCZOS,
             )
             photo = ImageTk.PhotoImage(img)
-            self._root.after(0, self._set_thumbnail, photo)
+            self._root.after(0, self._set_thumbnail, photo, fetch_id)
         except Exception:
             pass
 
-    def _set_thumbnail(self, photo):
+    def _set_thumbnail(self, photo, fetch_id: int):
+        if fetch_id != self._active_fetch_id:
+            return
         self._thumb_photo = photo
         self._thumb_canvas.delete("all")
         self._thumb_canvas.create_image(0, 0, anchor="nw", image=photo)
@@ -613,7 +713,32 @@ class YoutubeDownloaderApp:
 
     def _sort_formats(self, col: str):
         """Sort the formats treeview by column header click."""
-        pass  # Could implement sorting; formats are already sorted by quality
+        if not self._current_formats:
+            return
+
+        # Key map for sorting
+        key_map = {
+            "Resolution": lambda f: f.get("height", 0),
+            "FPS":        lambda f: f.get("fps", 0),
+            "Codec":      lambda f: f.get("codec", "").lower(),
+            "Size":       lambda f: f.get("size_bytes", 0),
+            "Type":       lambda f: f.get("stream_type", "").lower(),
+            "Format ID":  lambda f: f.get("format_id", ""),
+        }
+        getter = key_map.get(col, lambda f: 0)
+
+        # Toggle sort order
+        current_sort_col = getattr(self, "_sort_col", None)
+        current_sort_rev = getattr(self, "_sort_rev", False)
+        if current_sort_col == col:
+            sort_rev = not current_sort_rev
+        else:
+            sort_rev = True if col in ("Resolution", "FPS", "Size") else False
+
+        self._sort_col = col
+        self._sort_rev = sort_rev
+        self._current_formats.sort(key=getter, reverse=sort_rev)
+        self._populate_formats(self._current_formats)
 
     # ── Downloads ──────────────────────────────────────────────────────────
 
@@ -623,7 +748,7 @@ class YoutubeDownloaderApp:
             return
 
         if use_best or self._audio_only.get():
-            fmt_id = "bestvideo+bestaudio/best"
+            fmt_id = "bestaudio/best" if self._audio_only.get() else "bestvideo+bestaudio/best"
         else:
             sel = self._fmt_tree.selection()
             if not sel:
@@ -661,6 +786,9 @@ class YoutubeDownloaderApp:
             self._enqueue_playlist_item(idx)
 
     def _download_playlist_all(self):
+        if not self._playlist_items:
+            self._show_error("No playlist loaded.")
+            return
         for idx in range(len(self._playlist_items)):
             self._enqueue_playlist_item(idx)
 
@@ -672,7 +800,7 @@ class YoutubeDownloaderApp:
         item = DownloadItem(
             url        = url,
             title      = entry.get("title") or url[:50],
-            format_id  = "bestvideo+bestaudio/best",
+            format_id  = "bestaudio/best" if self._audio_only.get() else "bestvideo+bestaudio/best",
             audio_only = self._audio_only.get(),
             output_dir = self._dl_folder.get(),
         )
@@ -700,7 +828,7 @@ class YoutubeDownloaderApp:
                 if item.filepath and os.path.isfile(item.filepath):
                     folder = os.path.dirname(item.filepath)
                 if os.path.isdir(folder):
-                    subprocess.Popen(f'explorer "{folder}"')
+                    subprocess.Popen(f'explorer "{os.path.normpath(folder)}"')
         elif item.status == DownloadStatus.FAILED:
             self._status_var.set(f"✗ Failed: {item.title[:50]}")
 
@@ -751,7 +879,9 @@ class YoutubeDownloaderApp:
         settings.set("theme", theme_manager.mode)
 
     def _open_settings(self):
-        SettingsDialog(self._root)
+        dlg = SettingsDialog(self._root)
+        self._root.wait_window(dlg)
+        self._dl_folder.set(settings.get("download_folder"))
 
     def _open_history(self):
         HistoryDialog(self._root)

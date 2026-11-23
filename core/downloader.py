@@ -18,7 +18,7 @@ from typing import Callable, Dict, List, Optional
 
 import yt_dlp
 
-from utils.helpers import sanitize_filename, format_bytes, now_str
+from utils.helpers import sanitize_filename, format_bytes, now_str, ensure_dir
 from utils.settings import settings
 
 
@@ -160,8 +160,15 @@ class Downloader:
     """
 
     def __init__(self):
-        self._semaphore = threading.Semaphore(settings.get("concurrent_downloads", 2))
+        self._concurrent_limit = settings.get("concurrent_downloads", 2)
+        self._semaphore = threading.Semaphore(self._concurrent_limit)
         self._lock      = threading.Lock()
+
+    def set_concurrency(self, limit: int):
+        """Update concurrent download limit."""
+        with self._lock:
+            self._concurrent_limit = max(1, int(limit))
+            self._semaphore = threading.Semaphore(self._concurrent_limit)
 
     # ── Info Fetching ──────────────────────────────────────────────────────
 
@@ -172,16 +179,24 @@ class Downloader:
         Returns a dict matching yt-dlp's info_dict format.
         Raises yt_dlp.utils.DownloadError on failure.
         """
-        ydl_opts = {
-            "quiet":           True,
-            "no_warnings":     True,
-            "skip_download":   True,
-            "extract_flat":    "in_playlist",
+        ydl_opts: dict = {
+            "quiet":                   True,
+            "no_warnings":             True,
+            "skip_download":           True,
+            "socket_timeout":          15,
+            "extract_flat":            "in_playlist",
             "force_generic_extractor": False,
+            "extractor_retries":       1,
+            "retries":                 1,
+            "no_color":                True,
         }
+        proxy = settings.get("proxy", "").strip()
+        if proxy:
+            ydl_opts["proxy"] = proxy
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-        return info
+        return info or {}
 
     def fetch_formats(self, url: str) -> dict:
         """
@@ -189,14 +204,22 @@ class Downloader:
 
         Returns the complete info_dict including 'formats'.
         """
-        ydl_opts = {
-            "quiet":         True,
-            "no_warnings":   True,
-            "skip_download": True,
+        ydl_opts: dict = {
+            "quiet":             True,
+            "no_warnings":       True,
+            "skip_download":     True,
+            "socket_timeout":    15,
+            "extractor_retries": 1,
+            "retries":           1,
+            "no_color":          True,
         }
+        proxy = settings.get("proxy", "").strip()
+        if proxy:
+            ydl_opts["proxy"] = proxy
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-        return info
+        return info or {}
 
     # ── Download ───────────────────────────────────────────────────────────
 
@@ -228,6 +251,8 @@ class Downloader:
         """Worker that respects the semaphore (concurrent download limit)."""
         with self._semaphore:
             if item.is_cancelled():
+                if on_done:
+                    on_done(item)
                 return
             item.status = DownloadStatus.ACTIVE
             self._run_download(item, on_progress)
@@ -266,15 +291,24 @@ class Downloader:
         """The actual yt-dlp call."""
         hook = _ProgressHook(item, on_progress)
 
+        ensure_dir(item.output_dir)
         output_template = os.path.join(
             item.output_dir,
             "%(title)s [%(id)s].%(ext)s",
         )
 
+        def _post_hook(d):
+            if d.get("status") == "finished":
+                info = d.get("info_dict", {})
+                fp = info.get("filepath") or info.get("_filename")
+                if fp:
+                    item.filepath = fp
+
         ydl_opts: dict = {
             "quiet":           True,
             "no_warnings":     True,
             "progress_hooks":  [hook],
+            "postprocessor_hooks": [_post_hook],
             "outtmpl":         output_template,
             "noplaylist":      True,
             "retries":         0,           # we handle retries ourselves
@@ -282,13 +316,17 @@ class Downloader:
             "noprogress":      False,
         }
 
-        # ── Bundled ffmpeg location (when running as a frozen .exe) ────────
+        # ── Bundled / local ffmpeg location ───────────────────────────────
         import sys
         if getattr(sys, "frozen", False):
             # PyInstaller extracts bundled files to sys._MEIPASS at runtime
             _ffmpeg_dir = os.path.join(sys._MEIPASS, "ffmpeg")
             if os.path.isdir(_ffmpeg_dir):
                 ydl_opts["ffmpeg_location"] = _ffmpeg_dir
+        else:
+            _local_ffmpeg = os.path.join(os.getcwd(), "ffmpeg")
+            if os.path.isdir(_local_ffmpeg):
+                ydl_opts["ffmpeg_location"] = _local_ffmpeg
 
         # ── Format selection ───────────────────────────────────────────────
         if item.audio_only:
@@ -318,8 +356,20 @@ class Downloader:
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([item.url])
-            item.status   = DownloadStatus.COMPLETED
-            item.progress = 100.0
+            if item.is_cancelled():
+                item.status = DownloadStatus.CANCELLED
+                _cleanup_partial_files(item)
+            else:
+                item.status   = DownloadStatus.COMPLETED
+                item.progress = 100.0
+                # Fallback check: if postprocessing changed extension (e.g. .webm -> .mp3 / .mp4)
+                if item.filepath and not os.path.isfile(item.filepath):
+                    base, _ = os.path.splitext(item.filepath)
+                    for ext in (settings.get("audio_format", "mp3"), "mp4", "mkv", "webm"):
+                        candidate = f"{base}.{ext}"
+                        if os.path.isfile(candidate):
+                            item.filepath = candidate
+                            break
         except yt_dlp.utils.DownloadCancelled:
             item.status = DownloadStatus.CANCELLED
             # Delete any .part / .ytdl temp files left on disk
@@ -377,15 +427,28 @@ def _clean_error(msg: str) -> str:
     return msg.strip()
 
 
-def parse_formats(info: dict) -> List[Dict]:
+def parse_formats(info: Optional[dict]) -> List[Dict]:
     """
     Convert the 'formats' list from yt-dlp info_dict into clean dicts
     suitable for displaying in the format table.
     """
+    if not info or not isinstance(info, dict):
+        return []
+
     results = []
     seen    = set()
 
-    for fmt in info.get("formats", []):
+    raw_formats = info.get("formats", []) or []
+    # Sort raw formats by bitrate/tbr descending so the highest quality stream is picked for each resolution
+    def _raw_tbr(f):
+        try:
+            return float(f.get("tbr") or f.get("filesize") or 0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    sorted_raw = sorted(raw_formats, key=_raw_tbr, reverse=True)
+
+    for fmt in sorted_raw:
         ext    = fmt.get("ext", "?")
         vcodec = fmt.get("vcodec", "none")
         acodec = fmt.get("acodec", "none")
@@ -393,11 +456,23 @@ def parse_formats(info: dict) -> List[Dict]:
         has_video = vcodec not in (None, "none", "")
         has_audio = acodec not in (None, "none", "")
 
-        height  = fmt.get("height")   or 0
-        fps     = fmt.get("fps")      or 0
-        tbr     = fmt.get("tbr")      or 0
-        size    = fmt.get("filesize") or fmt.get("filesize_approx")
-        fmt_id  = fmt.get("format_id", "")
+        try:
+            height = int(float(fmt.get("height") or 0))
+        except (ValueError, TypeError):
+            height = 0
+
+        try:
+            fps = int(float(fmt.get("fps") or 0))
+        except (ValueError, TypeError):
+            fps = 0
+
+        try:
+            tbr = float(fmt.get("tbr") or 0)
+        except (ValueError, TypeError):
+            tbr = 0.0
+
+        size   = fmt.get("filesize") or fmt.get("filesize_approx")
+        fmt_id = fmt.get("format_id", "")
 
         # Codec label
         if has_video and has_audio:
@@ -420,7 +495,8 @@ def parse_formats(info: dict) -> List[Dict]:
         results.append({
             "format_id":   fmt_id,
             "resolution":  resolution,
-            "fps":         int(fps) if fps else 0,
+            "height":      height,
+            "fps":         fps,
             "codec":       codec_label,
             "size":        format_bytes(size) if size else "~",
             "size_bytes":  size or 0,
@@ -431,11 +507,10 @@ def parse_formats(info: dict) -> List[Dict]:
             "stream_type": stream_type,
         })
 
-    # Sort: video+audio first, then by resolution desc
+    # Sort: video+audio first, then by resolution desc, then fps, then tbr
     def _sort_key(r):
-        h = int(r["resolution"].replace("p", "")) if r["resolution"].endswith("p") else 0
         order = 0 if r["stream_type"] == "Video+Audio" else (1 if r["stream_type"] == "Video" else 2)
-        return (order, -h, -(r["fps"] or 0))
+        return (order, -r.get("height", 0), -(r.get("fps", 0) or 0), -r.get("tbr", 0.0))
 
     results.sort(key=_sort_key)
     return results

@@ -96,8 +96,11 @@ class HistoryDialog(tk.Toplevel):
         import os, json
         hf = settings.history_file
         if os.path.isfile(hf):
-            with open(hf, "w") as f:
-                json.dump([], f)
+            try:
+                with open(hf, "w", encoding="utf-8") as f:
+                    json.dump([], f)
+            except OSError:
+                pass
         self._load()
 
     def _open_path(self, _):
@@ -106,6 +109,11 @@ class HistoryDialog(tk.Toplevel):
             return
         import os, subprocess
         path = self._tree.item(sel[0], "values")[3]
+        if not path:
+            return
+        path = os.path.normpath(path)
         folder = path if os.path.isdir(path) else os.path.dirname(path)
-        if os.path.isdir(folder):
+        if os.path.isfile(path):
+            subprocess.Popen(f'explorer /select,"{path}"')
+        elif os.path.isdir(folder):
             subprocess.Popen(f'explorer "{folder}"')

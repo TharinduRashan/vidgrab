@@ -8,6 +8,14 @@ License: MIT
 import sys
 import os
 
+# Set Windows Application User Model ID so Taskbar groups and displays the custom icon
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('vidgrab.app.downloader.pro')
+    except Exception:
+        pass
+
 # Ensure bundled ffmpeg is on PATH (for PyInstaller builds)
 if getattr(sys, 'frozen', False):
     base_dir = sys._MEIPASS

@@ -72,13 +72,14 @@ class DownloadCard(ttk.Frame):
         self._pause_btn.pack(side="left", padx=2)
 
         # Stop/Cancel button (stops the actual download)
-        tk.Button(
+        self._cancel_btn = tk.Button(
             btn_frame, text="⏹", command=self._cancel,
             bg=C["bg_hover"], fg="#EF4444",
             relief="flat", font=("Segoe UI", 12), padx=6, pady=2,
             cursor="hand2", activebackground=C["bg_selected"],
             activeforeground="#EF4444",
-        ).pack(side="left", padx=2)
+        )
+        self._cancel_btn.pack(side="left", padx=2)
 
         # Remove/Clear button (X on the far right)
         tk.Button(
@@ -123,23 +124,45 @@ class DownloadCard(ttk.Frame):
         self._title_var.set(item.title[:72] + ("…" if len(item.title) > 72 else ""))
         self._progress.set(item.progress)
 
-        # Meta info
+        # Meta info & button states
         if status == "ACTIVE":
             speed = format_speed(item.speed)
             eta   = format_eta(item.eta)
             self._meta_var.set(f"{speed}  ·  ETA {eta}")
+            if self._folder_btn.winfo_ismapped():
+                self._folder_btn.pack_forget()
+            self._pause_btn.configure(state="normal")
+            self._cancel_btn.configure(state="normal")
         elif status == "COMPLETED":
             self._meta_var.set("Done ✓")
-            self._folder_btn.pack(side="left", padx=2)
+            if not self._folder_btn.winfo_ismapped():
+                self._folder_btn.pack(side="left", padx=2, before=self._pause_btn)
             self._pause_btn.configure(state="disabled")
+            self._cancel_btn.configure(state="disabled")
         elif status == "FAILED":
             self._meta_var.set("Failed")
+            if self._folder_btn.winfo_ismapped():
+                self._folder_btn.pack_forget()
+            self._pause_btn.configure(state="disabled")
+            self._cancel_btn.configure(state="disabled")
         elif status == "PAUSED":
             self._meta_var.set("Paused")
+            if self._folder_btn.winfo_ismapped():
+                self._folder_btn.pack_forget()
+            self._pause_btn.configure(state="normal")
+            self._cancel_btn.configure(state="normal")
         elif status in ("QUEUED", "FETCHING"):
             self._meta_var.set("Waiting…")
+            if self._folder_btn.winfo_ismapped():
+                self._folder_btn.pack_forget()
+            self._pause_btn.configure(state="normal")
+            self._cancel_btn.configure(state="normal")
         elif status == "CANCELLED":
             self._meta_var.set("Cancelled")
+            if self._folder_btn.winfo_ismapped():
+                self._folder_btn.pack_forget()
+            self._pause_btn.configure(state="disabled")
+            self._cancel_btn.configure(state="disabled")
 
         # Pause button label
         if item.is_paused():
@@ -301,9 +324,9 @@ class DownloadQueuePanel(ttk.Frame):
         folder = item.output_dir
         if item.filepath and os.path.isfile(item.filepath):
             folder = os.path.dirname(item.filepath)
-        if os.path.isdir(folder):
-            subprocess.Popen(f'explorer /select,"{item.filepath}"'
-                             if item.filepath else f'explorer "{folder}"')
+            subprocess.Popen(f'explorer /select,"{os.path.normpath(item.filepath)}"')
+        elif os.path.isdir(folder):
+            subprocess.Popen(f'explorer "{os.path.normpath(folder)}"')
 
     def _update_count(self):
         n = len(self._cards)

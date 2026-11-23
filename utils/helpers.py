@@ -17,13 +17,15 @@ from typing import Optional
 # Platforms supported natively by yt-dlp
 _SUPPORTED_PATTERNS = [
     # YouTube
-    r'(https?://)?(www\.)?youtube\.com/watch\?.*v=[\w-]+',
+    r'(https?://)?(www\.|m\.|music\.)?youtube\.com/watch\?.*v=[\w-]+',
     r'(https?://)?youtu\.be/[\w-]+',
-    r'(https?://)?(www\.)?youtube\.com/shorts/[\w-]+',
-    r'(https?://)?(www\.)?youtube\.com/playlist\?.*list=[\w-]+',
-    r'(https?://)?(www\.)?youtube\.com/@[\w-]+',
-    r'(https?://)?(www\.)?youtube\.com/channel/[\w-]+',
-    r'(https?://)?(www\.)?youtube\.com/c/[\w-]+',
+    r'(https?://)?(www\.|m\.|music\.)?youtube\.com/shorts/[\w-]+',
+    r'(https?://)?(www\.|m\.|music\.)?youtube\.com/live/[\w-]+',
+    r'(https?://)?(www\.|m\.|music\.)?youtube\.com/embed/[\w-]+',
+    r'(https?://)?(www\.|m\.|music\.)?youtube\.com/playlist\?.*list=[\w-]+',
+    r'(https?://)?(www\.|m\.|music\.)?youtube\.com/@[\w-]+',
+    r'(https?://)?(www\.|m\.|music\.)?youtube\.com/channel/[\w-]+',
+    r'(https?://)?(www\.|m\.|music\.)?youtube\.com/c/[\w-]+',
     # Facebook
     r'(https?://)?(www\.)?facebook\.com/.*/(videos|reel|watch)/[\w/?=&]+',
     r'(https?://)?(www\.)?facebook\.com/watch(/live)?/?\?.*v=\d+',
@@ -44,15 +46,24 @@ _SUPPORTED_PATTERNS = [
     # Twitch
     r'(https?://)?(www\.)?twitch\.tv/videos/\d+',
     r'(https?://)?(www\.)?twitch\.tv/[\w]+/clip/[\w-]+',
+    # SoundCloud
+    r'(https?://)?(www\.)?soundcloud\.com/[\w-]+/[\w-]+',
+    # Dailymotion
+    r'(https?://)?(www\.)?dailymotion\.com/video/[\w-]+',
     # Generic fallback: any http/https URL with a video-like path
-    r'https?://[^\s]+\.(mp4|webm|mkv|mov|avi)(\?.*)?$',
+    r'https?://[^\s]+\.(mp4|webm|mkv|mov|avi|flv|m4a|mp3)(\?.*)?$',
 ]
 
 
 def is_valid_url(url: str) -> bool:
     """Return True if *url* looks like a URL supported by yt-dlp."""
     url = url.strip()
-    return any(re.search(p, url, re.IGNORECASE) for p in _SUPPORTED_PATTERNS)
+    if not url:
+        return False
+    if any(re.search(p, url, re.IGNORECASE) for p in _SUPPORTED_PATTERNS):
+        return True
+    # Generic fallback: valid http/https web URL
+    return bool(re.match(r'^https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/.*)?$', url))
 
 
 # Backwards-compat alias used elsewhere in the codebase
@@ -61,7 +72,7 @@ is_valid_youtube_url = is_valid_url
 
 def is_playlist_url(url: str) -> bool:
     """Return True if the URL points to a YouTube playlist."""
-    return 'list=' in url and 'youtube.com/playlist' in url
+    return 'list=' in url and ('youtube.com/playlist' in url or 'music.youtube.com/playlist' in url)
 
 
 # ──────────────────────────── Size / Speed Formatting ───────────────────────
@@ -70,11 +81,15 @@ def format_bytes(num_bytes: Optional[float], suffix: str = "B") -> str:
     """Convert bytes to a human-readable string (KB / MB / GB …)."""
     if num_bytes is None:
         return "–"
-    if num_bytes == 0:
+    try:
+        num_bytes = float(num_bytes)
+    except (ValueError, TypeError):
+        return "–"
+    if num_bytes <= 0:
         return "0 B"
     units = ("", "K", "M", "G", "T", "P")
     index = int(math.log(abs(num_bytes), 1024))
-    index = min(index, len(units) - 1)
+    index = max(0, min(index, len(units) - 1))
     value = num_bytes / (1024 ** index)
     return f"{value:.1f} {units[index]}{suffix}"
 
@@ -88,9 +103,15 @@ def format_speed(bytes_per_sec: Optional[float]) -> str:
 
 def format_eta(seconds: Optional[float]) -> str:
     """Convert seconds into a HH:MM:SS or MM:SS ETA string."""
-    if seconds is None or seconds < 0:
+    if seconds is None:
         return "–"
-    seconds = int(seconds)
+    try:
+        seconds = float(seconds)
+        if math.isnan(seconds) or math.isinf(seconds) or seconds < 0:
+            return "–"
+        seconds = int(seconds)
+    except (ValueError, TypeError, OverflowError):
+        return "–"
     if seconds >= 3600:
         h = seconds // 3600
         m = (seconds % 3600) // 60
@@ -115,8 +136,12 @@ _INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 
 def sanitize_filename(name: str, max_length: int = 180) -> str:
     """Remove characters that are illegal in Windows filenames."""
+    if not name:
+        return "download"
     name = _INVALID_CHARS.sub('_', name)
     name = name.strip(". ")
+    if not name:
+        name = "download"
     return name[:max_length] if len(name) > max_length else name
 
 

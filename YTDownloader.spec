@@ -30,13 +30,15 @@ hidden = (
 # ── Data files ───────────────────────────────────────────────────────────────
 datas = collect_data_files('yt_dlp')
 
-# Un-comment to bundle ffmpeg (place ffmpeg.exe / ffprobe.exe in ./ffmpeg/):
-# import os
-# datas += [('./ffmpeg/ffmpeg.exe',  'ffmpeg'),
-#            ('./ffmpeg/ffprobe.exe', 'ffmpeg')]
+import os
+for bin_name in ('ffmpeg.exe', 'ffprobe.exe'):
+    bin_path = os.path.join('.', 'ffmpeg', bin_name)
+    if os.path.isfile(bin_path):
+        datas.append((bin_path, 'ffmpeg'))
 
-# Optional icon
-# datas += [('./assets/icon.ico', 'assets')]
+icon_file = 'assets/icon.ico' if os.path.isfile('assets/icon.ico') else None
+if icon_file:
+    datas.append(('assets/icon.ico', 'assets'))
 
 a = Analysis(
     ['main.py'],
@@ -56,6 +58,8 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+version_file = 'version_info.txt' if os.path.isfile('version_info.txt') else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -72,7 +76,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon='assets/icon.ico',  # Un-comment if you have an .ico file
+    icon=icon_file,
+    version=version_file,
 )
 
 coll = COLLECT(
