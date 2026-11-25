@@ -24,6 +24,7 @@ try:
 except ImportError:
     _PIL_AVAILABLE = False
 
+from core import __version__
 from core.downloader import (
     DownloadItem, DownloadStatus, downloader, parse_formats
 )
@@ -44,7 +45,7 @@ class YoutubeDownloaderApp:
 
     def __init__(self):
         self._root        = tk.Tk()
-        self._root.title("VidGrab")
+        self._root.title(f"VidGrab v{__version__}")
         self._root.geometry(f"{D['window_width']}x{D['window_height']}")
         self._root.minsize(D["min_width"], D["min_height"])
 
@@ -480,7 +481,7 @@ class YoutubeDownloaderApp:
         ttk.Separator(self._root, orient="horizontal").pack(fill="x", side="bottom")
         ttk.Label(bar, textvariable=self._status_var,
                   style="Muted.TLabel").pack(side="left")
-        ttk.Label(bar, text="yt-dlp powered  ·  YT Downloader Pro",
+        ttk.Label(bar, text=f"yt-dlp powered  ·  VidGrab v{__version__}",
                   style="Muted.TLabel").pack(side="right")
 
     # ────────────────────────── ACTIONS ────────────────────────────────────
